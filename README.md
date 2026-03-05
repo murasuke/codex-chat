@@ -25,13 +25,19 @@
 npm install
 ```
 
-2. スキーマ適用
+2. `.env` 作成
+
+```bash
+cp .env.example .env
+```
+
+3. スキーマ適用
 
 ```bash
 psql "$DATABASE_URL" -f db/schema.sql
 ```
 
-3. 環境変数
+4. 環境変数
 
 ### `apps/chat-api`
 
@@ -41,6 +47,10 @@ psql "$DATABASE_URL" -f db/schema.sql
 - `DATABASE_URL`
 - `PORT` (default: `8080`)
 
+`apps/chat-api` は以下の順で `.env` を読み込みます。
+- 実行時カレントディレクトリの `.env`
+- リポジトリルートの `.env`
+
 ### `apps/crawler`
 
 - `OPENAI_API_KEY`
@@ -49,6 +59,8 @@ psql "$DATABASE_URL" -f db/schema.sql
 - `CRAWL_START_URL`
 - `CRAWL_ALLOWED_HOST`
 - `CRAWL_MAX_PAGES` (default: `200`)
+
+`apps/crawler` も同様に `.env` を読み込みます。
 
 ### `apps/widget`
 

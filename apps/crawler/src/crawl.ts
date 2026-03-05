@@ -1,10 +1,20 @@
 import dotenv from "dotenv";
 import { createHash } from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
 import { load } from "cheerio";
 import OpenAI from "openai";
 import { Pool, PoolClient } from "pg";
 
-dotenv.config();
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const envCandidates = [
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(currentDir, "../../../.env"),
+];
+
+for (const envPath of envCandidates) {
+  dotenv.config({ path: envPath, override: false });
+}
 
 type CrawlTarget = {
   startUrl: string;
