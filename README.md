@@ -1,6 +1,6 @@
 # Help Chatbot Platform (PostgreSQL)
 
-メールマーケティングツールへ組み込む前提の、汎用ヘルプチャット基盤のMVP構成です。
+Webアプリへ組み込む前提の、汎用ヘルプチャット基盤のMVP構成です。
 
 ## Monorepo Layout
 
