@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,6 +17,11 @@ type WidgetConfig = {
   apiBaseUrl?: string;
 };
 
+type WidgetSize = {
+  width: number;
+  height: number;
+};
+
 declare global {
   interface Window {
     HELP_CHAT_CONFIG?: WidgetConfig;
@@ -25,6 +30,30 @@ declare global {
 
 function getApiBaseUrl(): string {
   return window.HELP_CHAT_CONFIG?.apiBaseUrl || "";
+}
+
+const WIDGET_SIZE_KEY = "help_chat_widget_size";
+const DEFAULT_WIDGET_SIZE: WidgetSize = { width: 360, height: 560 };
+const MIN_WIDGET_WIDTH = 320;
+const MIN_WIDGET_HEIGHT = 420;
+const MAX_WIDGET_WIDTH = 720;
+const MAX_WIDGET_HEIGHT = 840;
+
+function loadWidgetSize(): WidgetSize {
+  try {
+    const raw = localStorage.getItem(WIDGET_SIZE_KEY);
+    if (!raw) return DEFAULT_WIDGET_SIZE;
+    const parsed = JSON.parse(raw) as Partial<WidgetSize>;
+    const width = Number(parsed.width);
+    const height = Number(parsed.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return DEFAULT_WIDGET_SIZE;
+    return {
+      width: Math.max(MIN_WIDGET_WIDTH, Math.min(MAX_WIDGET_WIDTH, Math.round(width))),
+      height: Math.max(MIN_WIDGET_HEIGHT, Math.min(MAX_WIDGET_HEIGHT, Math.round(height))),
+    };
+  } catch {
+    return DEFAULT_WIDGET_SIZE;
+  }
 }
 
 const markdownSchema = {
@@ -46,6 +75,57 @@ function Widget() {
   const [message, setMessage] = useState("");
   const [response, setResponse] = useState<ChatApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [size, setSize] = useState<WidgetSize>(() => loadWidgetSize());
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  function clampSize(next: WidgetSize): WidgetSize {
+    return {
+      width: Math.max(MIN_WIDGET_WIDTH, Math.min(MAX_WIDGET_WIDTH, Math.round(next.width))),
+      height: Math.max(MIN_WIDGET_HEIGHT, Math.min(MAX_WIDGET_HEIGHT, Math.round(next.height))),
+    };
+  }
+
+  function startLeftResize(event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = size.width;
+    const startHeight = size.height;
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      const next = clampSize({
+        width: startWidth - dx,
+        height: startHeight + dy,
+      });
+      setSize(next);
+      localStorage.setItem(WIDGET_SIZE_KEY, JSON.stringify(next));
+    }
+
+    function onMouseUp() {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  useEffect(() => {
+    if (!open || !panelRef.current) return;
+    const panel = panelRef.current;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const width = Math.max(MIN_WIDGET_WIDTH, Math.min(MAX_WIDGET_WIDTH, Math.round(entry.contentRect.width)));
+      const height = Math.max(MIN_WIDGET_HEIGHT, Math.min(MAX_WIDGET_HEIGHT, Math.round(entry.contentRect.height)));
+      setSize({ width, height });
+      localStorage.setItem(WIDGET_SIZE_KEY, JSON.stringify({ width, height }));
+    });
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [open]);
 
   async function ask() {
     const trimmed = message.trim();
@@ -99,19 +179,42 @@ function Widget() {
 
       {open && (
         <div
+          ref={panelRef}
           style={{
             position: "fixed",
             right: 16,
             bottom: 84,
-            width: 360,
-            height: 560,
+            width: size.width,
+            height: size.height,
             background: "#fff",
             border: "1px solid #ccc",
             zIndex: 9999,
             display: "flex",
             flexDirection: "column",
+            resize: "both",
+            overflow: "hidden",
+            minWidth: MIN_WIDGET_WIDTH,
+            minHeight: MIN_WIDGET_HEIGHT,
+            maxWidth: MAX_WIDGET_WIDTH,
+            maxHeight: MAX_WIDGET_HEIGHT,
           }}
-        >
+          >
+            <div
+              onMouseDown={startLeftResize}
+              title="サイズ変更"
+              style={{
+                position: "absolute",
+                left: 0,
+                bottom: 0,
+                width: 14,
+                height: 14,
+                cursor: "nesw-resize",
+                background:
+                  "linear-gradient(135deg, transparent 0 35%, #94a3b8 35% 45%, transparent 45% 100%)",
+                zIndex: 10000,
+              }}
+            />
+
           <div style={{ padding: "12px 12px 8px 12px", borderBottom: "1px solid #e5e7eb" }}>
             <h4 style={{ margin: 0 }}>ヘルプチャット</h4>
           </div>
