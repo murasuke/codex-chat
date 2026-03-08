@@ -18,6 +18,10 @@ export const config = {
   openAiModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
   embeddingModel: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
   pgConnectionString: process.env.DATABASE_URL || "",
+  corsOrigins: (process.env.CORS_ORIGIN || "http://localhost:8088")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
 };
 
 if (!config.openAiApiKey) {

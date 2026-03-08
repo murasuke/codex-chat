@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import { z } from "zod";
 import { config } from "./config.js";
 import { ensureSession, saveMessage } from "./db.js";
@@ -13,6 +14,11 @@ const requestSchema = z.object({
 });
 
 const app = express();
+app.use(
+  cors({
+    origin: config.corsOrigins,
+  }),
+);
 app.use(express.json());
 
 app.post("/api/chat", async (req, res) => {

@@ -56,11 +56,39 @@ psql "$DATABASE_URL" -f db/schema.sql
 - `OPENAI_API_KEY`
 - `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`)
 - `DATABASE_URL`
-- `CRAWL_START_URL`
+- `CRAWL_START_URL` (`--url-file` 未指定時のみ必須)
 - `CRAWL_ALLOWED_HOST`
 - `CRAWL_MAX_PAGES` (default: `200`)
+- `EMBEDDING_TPM_LIMIT` (default: `800000`)
+- `EMBEDDING_MAX_BATCH_TOKENS` (default: `20000`)
+- `EMBEDDING_MAX_RETRIES` (default: `6`)
+- `EMBEDDING_RETRY_BASE_MS` (default: `300`)
 
 `apps/crawler` も同様に `.env` を読み込みます。
+
+### Crawler URL seed file (`--url-file`)
+
+`CRAWL_START_URL` の代わりに、改行区切りのURLファイルを指定してクロール開始URLを複数渡せます。
+
+URLファイル例 (`seeds/myasp-urls.txt`):
+
+```txt
+https://docs.myasp.jp/?p=32744
+https://docs.myasp.jp/?p=38080
+# コメント行は無視されます
+https://docs.myasp.jp/?p=35348
+```
+
+実行例:
+
+```bash
+npm run dev -w crawler -- --url-file seeds/myasp-urls.txt
+```
+
+仕様:
+- `--url-file` 指定時は `CRAWL_START_URL` は不要
+- 空行と `#` で始まる行は無視
+- `CRAWL_ALLOWED_HOST` と一致するURLのみ有効
 
 ### `apps/widget`
 
@@ -73,6 +101,8 @@ npm run build
 npm run dev -w chat-api
 npm run dev -w crawler
 npm run build -w widget
+npm run preview:widget
+npm run db:reindex:vector
 ```
 
 ## Widget Embed
@@ -85,6 +115,28 @@ npm run build -w widget
 </script>
 <script src="/assets/help-chat-widget.iife.js"></script>
 ```
+
+## Widget Smoke Test (static HTML)
+
+`http-server` で静的配信して簡易確認できます。
+
+```bash
+npm run preview:widget
+```
+
+起動後に [http://localhost:8088/preview/widget-smoke-test.html](http://localhost:8088/preview/widget-smoke-test.html) を開いてください。
+
+## Vector Index Reindex (manual recovery)
+
+ベクトル検索の結果が極端に減る/0件になる場合、手動で `ivfflat` インデックスを再構築できます。
+
+```bash
+npm run db:reindex:vector
+```
+
+オプション:
+- `REINDEX_TARGET` (default: `idx_chunks_embedding_cosine`)
+- `REINDEX_MAINTENANCE_WORK_MEM` (default: `256MB`)
 
 ## MVP Scope
 

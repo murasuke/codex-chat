@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { createHash } from "crypto";
+import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { load } from "cheerio";
@@ -17,7 +18,7 @@ for (const envPath of envCandidates) {
 }
 
 type CrawlTarget = {
-  startUrl: string;
+  startUrls: string[];
   allowedHost: string;
   maxPages: number;
 };
@@ -41,6 +42,68 @@ type PageSnapshot = {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const embeddingModel = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+const embeddingTpmLimit = Number(process.env.EMBEDDING_TPM_LIMIT || 800000);
+const embeddingMaxBatchTokens = Number(process.env.EMBEDDING_MAX_BATCH_TOKENS || 20000);
+const embeddingMaxRetries = Number(process.env.EMBEDDING_MAX_RETRIES || 6);
+const embeddingRetryBaseMs = Number(process.env.EMBEDDING_RETRY_BASE_MS || 300);
+
+type TokenUsagePoint = {
+  timestampMs: number;
+  tokens: number;
+};
+
+class TokenRateLimiter {
+  private usage: TokenUsagePoint[] = [];
+
+  constructor(private readonly tpmLimit: number) {}
+
+  private prune(nowMs: number): void {
+    const threshold = nowMs - 60000;
+    while (this.usage.length > 0 && this.usage[0].timestampMs < threshold) {
+      this.usage.shift();
+    }
+  }
+
+  private usedTokens(): number {
+    return this.usage.reduce((sum, point) => sum + point.tokens, 0);
+  }
+
+  private requiredWaitMs(nowMs: number, neededTokens: number): number {
+    let releasable = 0;
+    for (const point of this.usage) {
+      releasable += point.tokens;
+      if (releasable >= neededTokens) {
+        return Math.max(0, point.timestampMs + 60000 - nowMs + 5);
+      }
+    }
+    return 600;
+  }
+
+  async waitFor(tokens: number): Promise<void> {
+    if (tokens <= 0) return;
+    if (tokens > this.tpmLimit) {
+      throw new Error(`embedding request tokens (${tokens}) exceed EMBEDDING_TPM_LIMIT (${this.tpmLimit})`);
+    }
+
+    while (true) {
+      const nowMs = Date.now();
+      this.prune(nowMs);
+      const used = this.usedTokens();
+      const nextTotal = used + tokens;
+
+      if (nextTotal <= this.tpmLimit) {
+        this.usage.push({ timestampMs: nowMs, tokens });
+        return;
+      }
+
+      const needed = nextTotal - this.tpmLimit;
+      const waitMs = this.requiredWaitMs(nowMs, needed);
+      await sleep(waitMs);
+    }
+  }
+}
+
+const embeddingLimiter = new TokenRateLimiter(embeddingTpmLimit);
 
 function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -129,15 +192,112 @@ function chunkText(content: string, chunkSize = 1200, overlap = 200): string[] {
   return chunks;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function estimateTokens(text: string): number {
+  // Safe-side rough estimate for mixed JP/EN text.
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function parseRetryAfterMs(error: unknown): number | null {
+  const message =
+    typeof error === "object" && error && "message" in error
+      ? String((error as { message?: string }).message || "")
+      : "";
+  const msMatch = message.match(/try again in\s+(\d+)ms/i);
+  if (msMatch?.[1]) return Number(msMatch[1]);
+
+  const maybeError = error as {
+    response?: { headers?: { get?: (name: string) => string | null } };
+  };
+  const retryAfter = maybeError.response?.headers?.get?.("retry-after");
+  if (!retryAfter) return null;
+
+  const asSeconds = Number(retryAfter);
+  if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+    return Math.ceil(asSeconds * 1000);
+  }
+
+  return null;
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const anyError = error as { status?: number; code?: string; message?: string };
+  if (anyError?.status === 429) return true;
+  if (anyError?.code === "rate_limit_exceeded") return true;
+  return /rate limit/i.test(String(anyError?.message || ""));
+}
+
+function createEmbeddingBatches(inputs: string[], maxBatchTokens: number): Array<{ indexes: number[]; texts: string[]; tokens: number }> {
+  const batches: Array<{ indexes: number[]; texts: string[]; tokens: number }> = [];
+  let currentIndexes: number[] = [];
+  let currentTexts: string[] = [];
+  let currentTokens = 0;
+
+  for (let i = 0; i < inputs.length; i += 1) {
+    const text = inputs[i];
+    const tokens = estimateTokens(text);
+    if (tokens > maxBatchTokens) {
+      throw new Error(`single chunk token estimate (${tokens}) exceeds EMBEDDING_MAX_BATCH_TOKENS (${maxBatchTokens})`);
+    }
+
+    if (currentTokens > 0 && currentTokens + tokens > maxBatchTokens) {
+      batches.push({ indexes: currentIndexes, texts: currentTexts, tokens: currentTokens });
+      currentIndexes = [];
+      currentTexts = [];
+      currentTokens = 0;
+    }
+
+    currentIndexes.push(i);
+    currentTexts.push(text);
+    currentTokens += tokens;
+  }
+
+  if (currentIndexes.length > 0) {
+    batches.push({ indexes: currentIndexes, texts: currentTexts, tokens: currentTokens });
+  }
+
+  return batches;
+}
+
 async function createEmbeddings(inputs: string[]): Promise<number[][]> {
   if (inputs.length === 0) return [];
+  const batches = createEmbeddingBatches(inputs, embeddingMaxBatchTokens);
+  const results: number[][] = new Array(inputs.length);
 
-  const response = await openai.embeddings.create({
-    model: embeddingModel,
-    input: inputs,
-  });
+  for (const batch of batches) {
+    await embeddingLimiter.waitFor(batch.tokens);
 
-  return response.data.map((v) => v.embedding);
+    let attempt = 0;
+    while (true) {
+      try {
+        const response = await openai.embeddings.create({
+          model: embeddingModel,
+          input: batch.texts,
+        });
+
+        response.data.forEach((item, offset) => {
+          const index = batch.indexes[offset];
+          results[index] = item.embedding;
+        });
+        break;
+      } catch (error) {
+        attempt += 1;
+        if (!isRateLimitError(error) || attempt > embeddingMaxRetries) {
+          throw error;
+        }
+
+        const retryAfterMs = parseRetryAfterMs(error);
+        const backoffMs = Math.min(10000, embeddingRetryBaseMs * 2 ** (attempt - 1));
+        const jitterMs = Math.floor(Math.random() * 200);
+        await sleep(Math.max(retryAfterMs ?? 0, backoffMs + jitterMs));
+      }
+    }
+  }
+
+  return results;
 }
 
 function toVectorLiteral(values: number[]): string {
@@ -187,7 +347,7 @@ async function insertChunks(client: PoolClient, documentId: string, title: strin
       VALUES ($1::uuid, $2, $3, $4, $5, $6::vector, $7)
       RETURNING id::text
       `,
-      [documentId, i, title, null, chunks[i], toVectorLiteral(embeddings[i]), null],
+      [documentId, i, title, null, chunks[i], toVectorLiteral(embeddings[i]), estimateTokens(chunks[i])],
     );
     chunkIds.push(result.rows[0].id);
   }
@@ -208,8 +368,61 @@ async function insertImages(client: PoolClient, documentId: string, sourceUrl: s
   }
 }
 
+function parseCliArgs(argv: string[]): { urlFile?: string } {
+  const args = argv.slice(2);
+  const result: { urlFile?: string } = {};
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--url-file") {
+      const value = args[i + 1];
+      if (!value) {
+        throw new Error("--url-file requires a file path");
+      }
+      result.urlFile = value;
+      i += 1;
+    }
+  }
+
+  return result;
+}
+
+function normalizeSeedUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.startsWith("#")) return null;
+  try {
+    const url = new URL(trimmed);
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function loadSeedUrls(urlFilePath: string, allowedHost: string): Promise<string[]> {
+  const absolutePath = path.resolve(process.cwd(), urlFilePath);
+  const raw = await fs.readFile(absolutePath, "utf8");
+  const rows = raw.split(/\r?\n/);
+  const unique = new Set<string>();
+
+  for (const row of rows) {
+    const normalized = normalizeSeedUrl(row);
+    if (!normalized) continue;
+    const url = new URL(normalized);
+    if (isAllowedUrl(url, allowedHost)) {
+      unique.add(url.toString());
+    }
+  }
+
+  if (unique.size === 0) {
+    throw new Error(`No valid URLs found in file: ${absolutePath}`);
+  }
+
+  return [...unique];
+}
+
 async function crawl(target: CrawlTarget): Promise<{ scanned: number; changed: number }> {
-  const queue: string[] = [target.startUrl];
+  const queue: string[] = [...target.startUrls];
   const visited = new Set<string>();
   let scanned = 0;
   let changed = 0;
@@ -284,13 +497,41 @@ async function runWeeklyCrawl(target: CrawlTarget): Promise<void> {
 
 const startUrl = process.env.CRAWL_START_URL;
 const allowedHost = process.env.CRAWL_ALLOWED_HOST;
+const args = parseCliArgs(process.argv);
 
-if (!startUrl || !allowedHost || !process.env.OPENAI_API_KEY || !process.env.DATABASE_URL) {
-  throw new Error("CRAWL_START_URL, CRAWL_ALLOWED_HOST, OPENAI_API_KEY, DATABASE_URL are required");
+if (!allowedHost || !process.env.OPENAI_API_KEY || !process.env.DATABASE_URL) {
+  throw new Error("CRAWL_ALLOWED_HOST, OPENAI_API_KEY, DATABASE_URL are required");
+}
+const crawlAllowedHost = allowedHost;
+
+const maxPages = Number(process.env.CRAWL_MAX_PAGES || 200);
+
+async function buildStartUrls(): Promise<string[]> {
+  if (args.urlFile) {
+    return loadSeedUrls(args.urlFile, crawlAllowedHost);
+  }
+
+  if (!startUrl) {
+    throw new Error("CRAWL_START_URL is required when --url-file is not provided");
+  }
+
+  const normalized = normalizeSeedUrl(startUrl);
+  if (!normalized) {
+    throw new Error(`Invalid CRAWL_START_URL: ${startUrl}`);
+  }
+
+  const parsed = new URL(normalized);
+  if (!isAllowedUrl(parsed, crawlAllowedHost)) {
+    throw new Error(`CRAWL_START_URL host (${parsed.hostname}) must match CRAWL_ALLOWED_HOST (${crawlAllowedHost})`);
+  }
+
+  return [normalized];
 }
 
+const startUrls = await buildStartUrls();
+
 void runWeeklyCrawl({
-  startUrl,
-  allowedHost,
-  maxPages: Number(process.env.CRAWL_MAX_PAGES || 200),
+  startUrls,
+  allowedHost: crawlAllowedHost,
+  maxPages,
 });

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Widget Smoke Test</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Segoe UI", sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      main {
+        max-width: 920px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+      .card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 20px;
+      }
+      code {
+        background: #e2e8f0;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <h1>Help Chat Widget Smoke Test</h1>
+        <p>
+          右下の <strong>?</strong> ボタンをクリックするとチャットが開きます。
+          このページは実際の <code>chat-api</code> へ接続して動作確認します。
+        </p>
+        <p>
+          事前に <code>npm run dev -w chat-api</code> でAPIを起動し、
+          <code>window.HELP_CHAT_CONFIG.apiBaseUrl</code> を必要に応じて変更してください。
+        </p>
+      </div>
+    </main>
+
+    <script>
+      window.HELP_CHAT_CONFIG = { apiBaseUrl: "http://localhost:8080" };
+    </script>
+
+    <script src="/apps/widget/dist/help-chat-widget.iife.js"></script>
+  </body>
+</html>

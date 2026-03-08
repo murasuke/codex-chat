@@ -7,9 +7,14 @@
   ],
   "scripts": {
     "build": "npm run -ws build",
-    "dev": "npm run -ws dev"
+    "dev": "npm run -ws dev",
+    "preview:widget:build": "npm run build -w widget",
+    "preview:widget:serve": "http-server . -p 8088 -c-1",
+    "preview:widget": "npm run preview:widget:build && npm run preview:widget:serve",
+    "db:reindex:vector": "node scripts/reindex-vector-index.mjs"
   },
   "devDependencies": {
-    "@types/pg": "^8.18.0"
+    "@types/pg": "^8.18.0",
+    "http-server": "^14.1.1"
   }
 }
