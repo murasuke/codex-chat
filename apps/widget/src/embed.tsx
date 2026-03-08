@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -76,7 +76,6 @@ function Widget() {
   const [response, setResponse] = useState<ChatApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [size, setSize] = useState<WidgetSize>(() => loadWidgetSize());
-  const panelRef = useRef<HTMLDivElement | null>(null);
 
   function clampSize(next: WidgetSize): WidgetSize {
     return {
@@ -85,22 +84,21 @@ function Widget() {
     };
   }
 
-  function startLeftResize(event: React.MouseEvent<HTMLDivElement>) {
+  function persistSize(next: WidgetSize): void {
+    setSize(next);
+    localStorage.setItem(WIDGET_SIZE_KEY, JSON.stringify(next));
+  }
+
+  function startLeftBorderResize(event: React.MouseEvent<HTMLDivElement>) {
     event.preventDefault();
+    event.stopPropagation();
     const startX = event.clientX;
-    const startY = event.clientY;
     const startWidth = size.width;
-    const startHeight = size.height;
 
     function onMouseMove(moveEvent: MouseEvent) {
       const dx = moveEvent.clientX - startX;
-      const dy = moveEvent.clientY - startY;
-      const next = clampSize({
-        width: startWidth - dx,
-        height: startHeight + dy,
-      });
-      setSize(next);
-      localStorage.setItem(WIDGET_SIZE_KEY, JSON.stringify(next));
+      const next = clampSize({ width: startWidth - dx, height: size.height });
+      persistSize(next);
     }
 
     function onMouseUp() {
@@ -112,20 +110,26 @@ function Widget() {
     window.addEventListener("mouseup", onMouseUp);
   }
 
-  useEffect(() => {
-    if (!open || !panelRef.current) return;
-    const panel = panelRef.current;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      const width = Math.max(MIN_WIDGET_WIDTH, Math.min(MAX_WIDGET_WIDTH, Math.round(entry.contentRect.width)));
-      const height = Math.max(MIN_WIDGET_HEIGHT, Math.min(MAX_WIDGET_HEIGHT, Math.round(entry.contentRect.height)));
-      setSize({ width, height });
-      localStorage.setItem(WIDGET_SIZE_KEY, JSON.stringify({ width, height }));
-    });
-    observer.observe(panel);
-    return () => observer.disconnect();
-  }, [open]);
+  function startTopBorderResize(event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const startY = event.clientY;
+    const startHeight = size.height;
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const dy = moveEvent.clientY - startY;
+      const next = clampSize({ width: size.width, height: startHeight - dy });
+      persistSize(next);
+    }
+
+    function onMouseUp() {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
 
   async function ask() {
     const trimmed = message.trim();
@@ -179,7 +183,6 @@ function Widget() {
 
       {open && (
         <div
-          ref={panelRef}
           style={{
             position: "fixed",
             right: 16,
@@ -191,7 +194,6 @@ function Widget() {
             zIndex: 9999,
             display: "flex",
             flexDirection: "column",
-            resize: "both",
             overflow: "hidden",
             minWidth: MIN_WIDGET_WIDTH,
             minHeight: MIN_WIDGET_HEIGHT,
@@ -200,17 +202,28 @@ function Widget() {
           }}
           >
             <div
-              onMouseDown={startLeftResize}
-              title="サイズ変更"
+              onMouseDown={startTopBorderResize}
+              title="高さ変更"
               style={{
                 position: "absolute",
                 left: 0,
-                bottom: 0,
-                width: 14,
-                height: 14,
-                cursor: "nesw-resize",
-                background:
-                  "linear-gradient(135deg, transparent 0 35%, #94a3b8 35% 45%, transparent 45% 100%)",
+                top: 0,
+                width: "100%",
+                height: 8,
+                cursor: "ns-resize",
+                zIndex: 10000,
+              }}
+            />
+            <div
+              onMouseDown={startLeftBorderResize}
+              title="幅変更"
+              style={{
+                position: "absolute",
+                left: 0,
+                top: 0,
+                width: 8,
+                height: "100%",
+                cursor: "ew-resize",
                 zIndex: 10000,
               }}
             />
